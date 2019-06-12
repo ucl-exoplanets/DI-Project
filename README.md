@@ -35,3 +35,5 @@ To train the CNN, please type the following command in the terminal:
     $python CNN_keras.py --datapath LINK/TO/TRAINING --testpath LINK/TO/TEST --psf_path LINK/TO/PSF --checkpt LINK/TO/FOLDER
     
 The checkpoint folder contains the history of the training (training_0.csv) and the checkpoint of the trained model. 
+
+There are a number of hyperparameters available for the user to fine tune. Please refer to the code for detailed settings. 
