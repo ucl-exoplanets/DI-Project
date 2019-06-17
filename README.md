@@ -1,4 +1,4 @@
-# Direct_Imaging_with_CNN
+# Direct Imaging of Exoplanets with Deep Learning
 A public repository to store codes used in the paper "Pushing the Limits of Exoplanet Discovery via Direct Imaging with Deep Learning"
 
 ## Data
@@ -38,7 +38,7 @@ train_size specifies the number of input images
 The CNN requires input for training data, test data and the PSF for planet injection. Using these information, the CNN will generate
 another set of positive images (speckle+planet) for supervised training. 
 
-To train the CNN, please type the following command in the terminal:
+To train the CNN, please change directory into the CNN folder and type the following command in the terminal:
 
     $python CNN_keras.py --datapath LINK/TO/TRAINING --testpath LINK/TO/TEST --psf_path LINK/TO/PSF --checkpt LINK/TO/FOLDER
     
