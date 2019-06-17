@@ -1,5 +1,8 @@
 # Direct Imaging of Exoplanets with Deep Learning
-A public repository to store the code used in the paper "Pushing the Limits of Exoplanet Discovery via Direct Imaging with Deep Learning"
+A public repository to store the code used in the paper "Pushing the Limits of Exoplanet Discovery via Direct Imaging with Deep Learning". If you use this code, please cite the paper:
+
+Yip, K. H., Nikolaou, N., Coronica, P., Tsiaras, A., Edwards, B., Changeat Q., Morvan, M., Biller, B., Hinkley, S., Salmond, J., Archer, M., Sumption P., Choquet, E., Soummer, R., Pueyo, L., Waldmann, I. P., "Pushing the limits of exoplanet discovery via direct imaging with deep learning", In proceedings of ECML/PKDD 2019 (To Appear)
+
 
 ## Data
 Data can be downloaded at: https://osf.io/ez7pk/
