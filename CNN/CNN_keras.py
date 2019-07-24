@@ -1,18 +1,17 @@
 import argparse
 import os
 import sys
+
 import keras
 import matplotlib.pyplot as plt
+import numpy as np
 from keras import backend as K
-from keras.callbacks import ModelCheckpoint, EarlyStopping
+from keras.callbacks import ModelCheckpoint
 from keras.layers import Conv2D, MaxPooling2D
 from keras.layers import Dense, Dropout, Flatten, Activation, BatchNormalization
 from keras.models import Sequential
 from keras.models import load_model
 from mpl_toolkits.axes_grid1 import ImageGrid
-import numpy as np
-from sklearn.model_selection import train_test_split
-
 
 K.set_image_dim_ordering('tf')
 print(K.image_data_format())
@@ -20,146 +19,134 @@ print(K.image_data_format())
 ## required for efficient GPU use
 import tensorflow as tf
 from keras.backend import tensorflow_backend
+from sklearn.model_selection import train_test_split
+from ops import *
 
 config = tf.ConfigProto(gpu_options=tf.GPUOptions(allow_growth=True))
 session = tf.Session(config=config)
 tensorflow_backend.set_session(session)
 
 
+## required for efficient GPU use
+
+
 class CNN():
-    def __init__(self, datapath,psf_path,test_path, batch_size=32, epochs=100,
+    def __init__(self, datapath, batch_size=32, epochs=100,
                  droprate=0.5, img_row=64, img_col=64,
                  num_features=32, num_class=2,
-                 lr=0.0001, c_dim=1,
-                 checkpoint_dir='checkpoint', CV_num=1, dense_unit=128, model_type='simple',
-                 valid_size=0.2, SNR=10,decay = 0.0):
+                 lr=0.01, c_dim=1, output_name="training",
+                 checkpoint_dir='checkpoint', CV_num=1, model_type='simple', testpath='test',dense_unit = 256,
+                 valid_size=0.2, psfpath="CNN", decay=0.0, c_ratio=[0.001, 0.002]):
         self.data = np.load(datapath)
-        self.psf_pl = np.load(psf_path)
-        self.test_data = np.load(test_path)
+        self.psf_pl = np.load(psfpath)
+        self.test_data = np.load(testpath)
         self.checkpoint_dir = checkpoint_dir
         self.batch_size = batch_size
         self.epochs = epochs
-        self.droprate = droprate
         self.img_rows = img_row
         self.img_cols = img_col
         self.lr = lr
         self.num_class = num_class
         self.num_features = num_features
+        self.output_name = output_name
         self.c_dim = c_dim
         self.CV_num = CV_num
-        self.dense_unit = dense_unit
-        self.model_type = model_type
         self.valid_size = valid_size
-        self.SNR = SNR
         self.decay = decay
+        self.c_ratio = c_ratio
+        self.model_type = model_type
+        self.droprate = droprate
+        self.dense_unit = dense_unit
         print('data shape: {}'.format(self.data.shape))
 
         self.run_model()
 
-    def data_preprocess(self, data, SNR):
-        """Data preprocess stage. Here each negative example is duplicated to produce a postive example by injecting a planet psf onto it.
-        The injection method is a separate method and can be changed at any time.
-        Labels for both training and test data is also created here. """
-        ## inject planet for train_data
-        injected_samples = np.zeros([len(data), self.img_rows, self.img_cols])
+        sys.exit()
 
+    def local_normal(self, data):
+        new_imgs_list = []
+        for imgs in data:
+            local_min = np.min(imgs)
+            new_imgs = (imgs - local_min) / np.max(imgs - local_min)
+            new_imgs_list.append(new_imgs)
+        return np.array(new_imgs_list).reshape(-1, 64, 64)
+
+    def data_preprocess(self, data):
+
+        ## inject planet for train_data
+        injected_samples = np.zeros([len(data), 64, 64])
+        planet_loc_maps = np.zeros([len(data)*2, 64, 64])
         for i in range(len(data)):
-            new_img, Nx, Ny = self.SNR_injection(data[i].reshape(self.img_rows, self.img_cols), self.psf_pl, SNR=SNR)
+            new_img, loc_map = self.inject_planet(data[i].reshape(64, 64), self.psf_pl, c_ratio=self.c_ratio,no_blend=True)
             injected_samples[i] += new_img
+            planet_loc_maps[i] += loc_map
+
         normalised_injected = self.local_normal(injected_samples)
         nor_data = self.local_normal(data)
 
-        dataset = np.zeros([int(len(data) * 2), self.img_rows, self.img_cols])
+        dataset = np.zeros([int(len(data) * 2), 64, 64])
+
+        ## Here we normalised each images into [0,1]
         dataset[:len(data)] += normalised_injected
         dataset[len(data):] += nor_data
 
         label = np.zeros((len(dataset)))
         label[:len(data)] += 1
         print("label size =", label.shape)
-        print("train data size=", dataset.shape)
-        print("label sum=", np.sum(label))
+        print("data size=", dataset.shape)
+        print("number of positive examples", np.sum(label))
 
-        return dataset.reshape(-1, self.img_rows, self.img_cols, self.c_dim), label
-    def SNR_injection(self, data, tinyPSF, SNR=20, verbose=False, num_pixel=4):
-        """Planet injection method. """
-        pl_PSF = tinyPSF
-        pad_length = int(pl_PSF.shape[0] / 2)
-        pad_data = np.pad(data, ((pad_length, pad_length), (pad_length, pad_length)), 'constant',
-                          constant_values=(100000))
-        width = int(num_pixel / 2)
-        while True:
+        return dataset.reshape(-1, 64, 64, 1), label,planet_loc_maps
 
-            Nx = np.random.randint(0, high=self.img_rows)
-            Ny = np.random.randint(0, high=self.img_rows)
-            aperture = pad_data[Ny + 19 - width:Ny + 19 + width, Nx + 19 - width:Nx + 19 + width]
-            aperture = aperture[aperture < 100000]
-            noise_std = np.std(aperture)
-            FWHM_contri = np.sum(pl_PSF[19 - width:19 + width, 19 - width:19 + width])
-            pl_brightness = (noise_std * SNR * len(aperture.flatten()) / FWHM_contri)
+    def inject_planet(self,data, psf_library, c_ratio=[0.01, 0.1], x_bound=[4, 61], y_bound=[4, 61], no_blend=False):
+        """Inject planet into random location within a frame
+        data: single image
+        psf_library: collection of libarary (7x7)
+        c_ratio: the contrast ratio between max(speckle) and max(psf)*, currently accepting a range
+        x_bound: boundary of x position of the injected psf, must be within [0,64-7]
+        y_bound: boundary of y position of the injected psf, must be within [0,64-7]
+        no_blend: optional flag, used to control whether two psfs can blend into each other or not, default option allows blending.
 
-            if np.max(data) > np.max(pl_PSF * pl_brightness):
-                break
-            else:
-                pass
+        """
 
-        pad_data[Ny:Ny + pad_length * 2, Nx:Nx + pad_length * 2] += pl_PSF * pl_brightness
-        if verbose:
-            print("planet_PSF_signal=", np.sum(pl_PSF * pl_brightness))
-            print("planet_PSF_FWHMsignal=",
-                  np.sum(pl_PSF[19 - width:19 + width, 19 - width:19 + width] * pl_brightness))
-            print("Peak planet signal=", np.max(pl_PSF[19 - width:19 + width, 19 - width:19 + width] * pl_brightness))
-            print("Peak speckle signal=", np.max(data))
-            print("noise std=", noise_std)
-            plt.imshow(pad_data[pad_length:pad_length + self.img_rows, pad_length:pad_length + self.img_rows])
-        return pad_data[pad_length:pad_length + self.img_rows, pad_length:pad_length + self.img_rows], Nx, Ny
+        image = data.copy()
+        pl_num = np.random.randint(1, high=4)
+        pos_label = np.zeros([64, 64])
+        used_xy = np.array([])
+        c_prior = np.linspace(c_ratio[0], c_ratio[1], 100)
+        if x_bound[0] < 4 or x_bound[0] > 61:
+            raise Exception("current method only injects whole psf")
+        if y_bound[0] < 4 or y_bound[0] > 61:
+            raise Exception("current method only injects whole psf")
 
-    def local_normal(self, data):
-        """Perform image by image normalisation. Maximum and Minimum value of each image is extracted and used to create an normalised image between [0,1]"""
-        new_imgs_list = []
-        for imgs in data:
-            local_min = np.min(imgs)
-            new_imgs = (imgs - local_min) / np.max(imgs - local_min)
-            new_imgs_list.append(new_imgs)
-        return np.array(new_imgs_list).reshape(-1, self.img_rows, self.img_cols)
-
-    def return_heatmap(self, model, org_img,normalise = True):
-        """CAM implementation here. An activation heatmap is produced for every test images. """
-        test_img = model.output[:, 1]
-        if self.model_type == 'simple':
-            last_conv_layer = model.get_layer('conv2d_3')
-        else:
-            last_conv_layer = model.get_layer('conv2d_6')
-        grads = K.gradients(test_img, last_conv_layer.output)[0]
-
-        pooled_grads = K.mean(grads, axis=(0, 1, 2))
-        message = K.print_tensor(pooled_grads, message='pool_grad = ')
-        iterate = K.function([model.input],
-                             [message, last_conv_layer.output[0]])
-        pooled_grads_value, conv_layer_output_value = iterate([org_img.reshape(-1, self.img_rows, self.img_cols, self.c_dim)])
-        heatmap = np.mean(conv_layer_output_value, axis=-1)
-        if normalise:
-            heatmap = np.maximum(heatmap, 0)
-            heatmap /= np.max(heatmap)
-        return heatmap
-
-    def plot_heatmap(self, heatmap,diff, index, cv_num):
-        """Plotting function to show the heatmap and planet location of the corresponding test image. """
-        fig = plt.figure(figsize=(16, 8))
-
-        grid = ImageGrid(fig, 111,  # as in plt.subplot(111)
-                         nrows_ncols=(1, 2),
-                         axes_pad=0.15,
-                         share_all=True,
-                         )
-
-        # Add data to image grid
-        im = grid[0].imshow(heatmap)
-        im = grid[1].imshow(diff)
-
-        plt.savefig(os.path.join(self.checkpoint_dir, 'heatmap_{}_{}'.format(index, cv_num)),bbox_inches='tight')
-
+        for num in range(pl_num):
+            while True:
+                np.random.shuffle(c_prior)
+                psf_idx = np.random.randint(0, high=psf_library.shape[0])
+                Nx = np.random.randint(x_bound[0], high=x_bound[1])
+                Ny = np.random.randint(y_bound[0], high=y_bound[1])
+                if len(used_xy) == 0:
+                    pass
+                else:
+                    if no_blend:
+                        if np.any(dist([Nx, Ny], used_xy) < 3):
+                            pass
+                    else:
+                        if np.any(np.array([Nx, Ny]) == used_xy):
+                            pass
+                if dist([Nx, Ny], (32.5, 32.5)) < 4:
+                    pass
+                else:
+                    planet_psf = psf_library[psf_idx]
+                    brightness_f = c_prior[0] * np.max(image) / np.max(planet_psf)
+                    image[Ny - 4:Ny + 3, Nx - 4:Nx + 3] += planet_psf * brightness_f
+                    used_xy = np.append(used_xy, [Nx, Ny]).reshape(-1, 2)
+                    pos_label[Ny - 4:Ny + 3, Nx - 4:Nx + 3] = 1
+                    break
+        return image, pos_label
     def model_fn(self, model_type):
-        """Architetures for different models are presented here """
+
+        # prepare callbacks
         if not os.path.exists(os.path.join(self.checkpoint_dir, 'ckt')):
             os.makedirs(os.path.join(self.checkpoint_dir, 'ckt'))
 
@@ -175,12 +162,13 @@ class CNN():
             # convolution 1st layer
             self.model.add(
                 Conv2D(self.num_features, kernel_size=(filter_pixel, filter_pixel), padding="same", activation='relu',
-                       input_shape=input_shape, dim_ordering="tf"))  # 0
+                       input_shape=(64, 64, 1), dim_ordering="tf"))  # 0
             self.model.add(BatchNormalization(axis=3))
             self.model.add(
                 Conv2D(self.num_features, kernel_size=(filter_pixel, filter_pixel), padding="same", activation='relu',
                        input_shape=(64, 64, 1), dim_ordering="tf"))  # 0
             self.model.add(BatchNormalization(axis=3))
+            # model.add(LeakyReLU())
             self.model.add(MaxPooling2D(pool_size=(2, 2), dim_ordering="tf", padding="valid"))
 
             # convolution 2nd layer
@@ -207,22 +195,22 @@ class CNN():
             # Fully connected 1st layer
             self.model.add(Flatten())  # 7
             self.model.add(Dense(self.dense_unit, use_bias=False, activation='relu'))  # 13
-            # self.model.add(LeakyReLU()) #14
             self.model.add(Dropout(self.droprate))  # 15
 
             # Fully connected final layer
             self.model.add(Dense(2))  # 8
             self.model.add(Activation('sigmoid'))  # 9
             self.model.compile(loss=keras.losses.binary_crossentropy,
-                               optimizer=keras.optimizers.Adam(lr=self.lr,decay=self.decay),
+                               optimizer=keras.optimizers.Adam(lr=self.lr, decay=self.decay),
                                metrics=['accuracy'])
 
-        elif model_type == 'simple':
+        elif model_type == 'res_net':
             # convolution 1st layer
             self.model.add(
                 Conv2D(self.num_features, kernel_size=(filter_pixel, filter_pixel), padding="same", activation='relu',
-                       input_shape=input_shape, dim_ordering="tf", kernel_initializer='random_uniform'))  # 0
+                       input_shape=(64, 64, 1), dim_ordering="tf", kernel_initializer='random_uniform'))  # 0
             self.model.add(BatchNormalization(axis=3))
+            # model.add(LeakyReLU())
             self.model.add(MaxPooling2D(pool_size=(2, 2), dim_ordering="tf"))
 
             # convolution 2nd layer
@@ -242,43 +230,182 @@ class CNN():
             self.model.add(Dropout(self.droprate))  # 15
 
             # Fully connected final layer
-            self.model.add(Dense(2, use_bias=False, kernel_initializer='random_uniform', activation='sigmoid'))
+            # self.model.add(Dense(128,use_bias=False, kernel_initializer='random_uniform', activation='relu'))  # 8
+            self.model.add(Dense(2, use_bias=False, kernel_initializer='random_uniform', activation='softmax'))
             self.model.compile(loss=keras.losses.binary_crossentropy,
-                               optimizer=keras.optimizers.Adam(lr=self.lr,decay=self.decay),
+                               optimizer=keras.optimizers.Adam(lr=self.lr, decay=self.decay),
                                metrics=['accuracy'])
 
+        elif model_type == 'vgg_triple':
+            # convolution 1st layer
+            self.model.add(
+                Conv2D(self.num_features, kernel_size=(filter_pixel, filter_pixel), padding="same", activation='relu',
+                       input_shape=(64, 64, 1), dim_ordering="tf"))  # 0
+            self.model.add(BatchNormalization(axis=3))
+            self.model.add(
+                Conv2D(self.num_features, kernel_size=(filter_pixel, filter_pixel), padding="same", activation='relu',
+                       input_shape=(64, 64, 1), dim_ordering="tf"))  # 0
+            self.model.add(BatchNormalization(axis=3))
+            self.model.add(
+                Conv2D(self.num_features, kernel_size=(filter_pixel, filter_pixel), padding="same", activation='relu',
+                       input_shape=(64, 64, 1), dim_ordering="tf"))  # 0
+            self.model.add(BatchNormalization(axis=3))
+            self.model.add(MaxPooling2D(pool_size=(2, 2), dim_ordering="tf", padding="valid"))
+
+            # convolution 2nd layer
+            self.model.add(Conv2D(self.num_features * 2, kernel_size=(filter_pixel, filter_pixel), activation='relu',
+                                  padding="same", dim_ordering="tf"))  # 1
+            self.model.add(BatchNormalization(axis=3))
+            self.model.add(Conv2D(self.num_features * 2, kernel_size=(filter_pixel, filter_pixel), activation='relu',
+                                  padding="same", dim_ordering="tf"))  # 1
+            self.model.add(BatchNormalization(axis=3))
+            self.model.add(Conv2D(self.num_features * 2, kernel_size=(filter_pixel, filter_pixel), activation='relu',
+                                  padding="same", dim_ordering="tf"))  # 1
+            self.model.add(BatchNormalization(axis=3))
+            self.model.add(MaxPooling2D(pool_size=(2, 2), dim_ordering="tf", padding="valid"))
+            #         #
+            # convolution 3rd layer
+            self.model.add(Conv2D(self.num_features * 4, kernel_size=(filter_pixel, filter_pixel), activation='relu',
+                                  padding="same", dim_ordering="tf"))
+            self.model.add(BatchNormalization(axis=3))
+            self.model.add(Conv2D(self.num_features * 4, kernel_size=(filter_pixel, filter_pixel), activation='relu',
+                                  padding="same", dim_ordering="tf"))
+            self.model.add(BatchNormalization(axis=3))
+            self.model.add(Conv2D(self.num_features * 4, kernel_size=(filter_pixel, filter_pixel), activation='relu',
+                                  padding="same", dim_ordering="tf"))
+            self.model.add(BatchNormalization(axis=3))
+            self.model.add(MaxPooling2D(pool_size=(2, 2), dim_ordering="tf", padding="valid"))
+            # model.add(LeakyReLU())
+
+            # Fully connected 1st layer
+            self.model.add(Flatten())  # 7
+            self.model.add(Dense(self.dense_unit, use_bias=True, activation='relu'))  # 13
+            self.model.add(Dropout(self.droprate))  # 15
+
+            # Fully connected final layer
+            self.model.add(Dense(2))  # 8
+            self.model.add(Activation('sigmoid'))  # 9
+            self.model.compile(loss=keras.losses.binary_crossentropy,
+                               optimizer=keras.optimizers.Adam(lr=self.lr, decay=self.decay),
+                               metrics=['accuracy'])
+        elif model_type == 'vgg_deep':
+            # convolution 1st layer
+            self.model.add(
+                Conv2D(self.num_features, kernel_size=(filter_pixel, filter_pixel), padding="same", activation='linear',
+                       input_shape=(64, 64, 1), dim_ordering="tf"))  # 0
+            self.model.add(keras.layers.LeakyReLU(alpha=0.3))
+            self.model.add(BatchNormalization(axis=3))
+            self.model.add(
+                Conv2D(self.num_features, kernel_size=(filter_pixel, filter_pixel), padding="same", activation='linear',
+                       input_shape=(64, 64, 1), dim_ordering="tf"))  # 0
+            self.model.add(keras.layers.LeakyReLU(alpha=0.3))
+            self.model.add(BatchNormalization(axis=3))
+            # model.add(LeakyReLU())
+            self.model.add(MaxPooling2D(pool_size=(2, 2), dim_ordering="tf", padding="valid"))
+
+            # convolution 2nd layer
+            self.model.add(Conv2D(self.num_features * 2, kernel_size=(filter_pixel, filter_pixel), activation='linear',
+                                  padding="same", dim_ordering="tf"))  # 1
+            self.model.add(keras.layers.LeakyReLU(alpha=0.3))
+            self.model.add(BatchNormalization(axis=3))
+            self.model.add(Conv2D(self.num_features * 2, kernel_size=(filter_pixel, filter_pixel), activation='linear',
+                                  padding="same", dim_ordering="tf"))  # 1
+            self.model.add(keras.layers.LeakyReLU(alpha=0.3))
+            self.model.add(BatchNormalization(axis=3))
+            self.model.add(MaxPooling2D(pool_size=(2, 2), dim_ordering="tf", padding="valid"))
+            #         #
+            # convolution 3rd layer
+            self.model.add(Conv2D(self.num_features * 4, kernel_size=(filter_pixel, filter_pixel), activation='linear',
+                                  padding="same", dim_ordering="tf"))
+            self.model.add(keras.layers.LeakyReLU(alpha=0.3))
+            # 1
+            self.model.add(BatchNormalization(axis=3))
+            self.model.add(Conv2D(self.num_features * 4, kernel_size=(filter_pixel, filter_pixel), activation='linear',
+                                  padding="same", dim_ordering="tf"))
+            self.model.add(keras.layers.LeakyReLU(alpha=0.3))
+            # 1
+            self.model.add(BatchNormalization(axis=3))
+            # self.model.add(keras.layers.GlobalAveragePooling2D(data_format=None))
+            self.model.add(keras.layers.GlobalMaxPooling2D(data_format=None))
+
+            # Fully connected 1st layer
+            # Fully connected final layer
+            self.model.add(Dense(2))  # 8
+            self.model.add(Activation('sigmoid'))  # 9
+            self.model.compile(loss=keras.losses.binary_crossentropy,
+                               optimizer=keras.optimizers.Adam(lr=self.lr, decay=self.decay),
+                               metrics=['accuracy'])
         self.model.summary()
+        # sys.exit()
+
+    def return_heatmap(self, model, org_img, normalise=True):
+        test_img = model.output[:, 1]
+        if self.model_type == 'simple' or 'simple_alt':
+            last_conv_layer = model.get_layer('conv2d_6')
+        else:
+            last_conv_layer = model.get_layer('conv2d_6')
+        grads = K.gradients(test_img, last_conv_layer.output)[0]
+
+        pooled_grads = K.mean(grads, axis=(0, 1, 2))
+        message = K.print_tensor(pooled_grads, message='pool_grad = ')
+        iterate = K.function([model.input, K.learning_phase()],
+                             [message, last_conv_layer.output[0]])
+        pooled_grads_value, conv_layer_output_value = iterate([org_img.reshape(-1, 64, 64, 1), 0])
+        for i in range(conv_layer_output_value.shape[2]):
+            conv_layer_output_value[:, :, i] *= pooled_grads_value[i]
+        heatmap = np.mean(conv_layer_output_value, axis=-1)
+        if normalise:
+            heatmap = np.maximum(heatmap, 0)
+            heatmap /= np.max(heatmap)
+        return heatmap
+
+    def plot_heatmap(self, heatmap, diff, index, cv_num):
+
+        fig = plt.figure(figsize=(16, 8))
+
+        grid = ImageGrid(fig, 111,  # as in plt.subplot(111)
+                         nrows_ncols=(1, 2),
+                         axes_pad=0.15,
+                         share_all=True,
+                         )
+
+        # Add data to image grid
+        im = grid[0].imshow(heatmap)
+        im = grid[1].imshow(diff)
+
+        plt.savefig(os.path.join(self.checkpoint_dir, 'heatmap_{}_{}'.format(index, cv_num)), bbox_inches='tight')
+        np.savetxt(os.path.join(self.checkpoint_dir, 'heatmap_{}_{}.txt'.format(index, cv_num)), heatmap)
+
+
 
     def run_model(self):
 
-        """This is where the whole model is ran."""
+        ##Early Stopping
 
         if not os.path.exists(os.path.join(self.checkpoint_dir, 'history')):
             os.makedirs(os.path.join(self.checkpoint_dir, 'history'))
         cvscore = []
         test_score = []
-        ## Data Preprocess stage ##
-        train_data, train_label = self.data_preprocess(self.data, SNR=self.SNR)
-        test, test_label = self.data_preprocess(self.test_data, SNR=self.SNR)
-        index = list(range(len(train_data)))
-        np.random.shuffle(index)
-        train_data_shu, train_label_shu = train_data[index],train_label[index]
 
+        train_data, train_label,_ = self.data_preprocess(self.data)
+        test, test_label,loc_map = self.data_preprocess(self.test_data)
         test_label = keras.utils.to_categorical(test_label, num_classes=2, dtype='float32')
 
+        index = list(range(len(train_data)))
+        np.random.shuffle(index)
+        train_data_shu, train_label_shu = train_data[index], train_label[index]
+
+
+        # data, test, data_label,test_label = train_test_split(self.data, label, test_size=self.testsize, shuffle=True,random_state=42)
+        print("test_size:{}".format(test.shape))
+        print("test_label:{}".format(np.sum(test_label)))
         np.save(os.path.join(self.checkpoint_dir, 'test_data'), test)
+        np.save(os.path.join(self.checkpoint_dir, 'test_loc_map'), loc_map)
         np.savetxt(os.path.join(self.checkpoint_dir, 'test_label.txt'), test_label)
-        ## Cross validation ##
         for i in range(self.CV_num):
-            ## prepare call_backs, csv_logger for progress monitoring. ##
             csv_logger = keras.callbacks.CSVLogger(
                 os.path.join(self.checkpoint_dir, 'history/training_{}.log'.format(i)))
             self.callbacks = [
-                EarlyStopping(
-                    monitor='val_loss',
-                    patience=20,
-                    mode='min',
-                    verbose=1),
                 ModelCheckpoint(os.path.join(self.checkpoint_dir, 'ckt/checkpt_{}.h5'.format(i)),
                                 monitor='val_loss',
                                 save_best_only=True,
@@ -286,33 +413,33 @@ class CNN():
                                 verbose=1), csv_logger
             ]
 
-            X_train, X_valid, y_train, y_valid = train_test_split(train_data_shu, train_label_shu, test_size=self.valid_size,
+            X_train, X_valid, y_train, y_valid = train_test_split(train_data_shu, train_label_shu,
+                                                                  test_size=self.valid_size,
                                                                   shuffle=True)
             y_train = keras.utils.to_categorical(y_train, num_classes=2, dtype='float32')
             y_valid = keras.utils.to_categorical(y_valid, num_classes=2, dtype='float32')
 
             self.model_fn(self.model_type)
-            ## Training Phase ##
-            history = self.model.fit(X_train.reshape(-1, self.img_rows, self.img_cols, self.c_dim), y_train,
+            history = self.model.fit(X_train.reshape(-1, 64, 64, 1), y_train,
                                      batch_size=self.batch_size,
                                      epochs=self.epochs,
-                                     verbose=0,
-                                     validation_data=(X_valid.reshape(-1, self.img_rows, self.img_cols, self.c_dim), y_valid), shuffle=True,
+                                     verbose=1,
+                                     validation_data=(X_valid.reshape(-1, 64, 64, 1), y_valid), shuffle=True,
                                      callbacks=self.callbacks)
-            score = self.model.evaluate(X_valid.reshape(-1, self.img_rows, self.img_cols, self.c_dim), y_valid, verbose=0)
+            score = self.model.evaluate(X_valid.reshape(-1, 64, 64, 1), y_valid, verbose=0)
             cvscore.append(score[1])
-
-            ## Test Phase ##
             keras.backend.clear_session()
             model = load_model(os.path.join(self.checkpoint_dir, 'ckt/checkpt_{}.h5'.format(i)))
-            pred = model.evaluate(test.reshape(-1, self.img_rows, self.img_cols, self.c_dim), test_label)
+            pred = model.evaluate(test.reshape(-1, 64, 64, 1), test_label)
             test_score.append(pred[1])
-            pred = model.predict(test.reshape(-1,self.img_rows, self.img_cols, self.c_dim))
+            pred = model.predict(test.reshape(-1, 64, 64, 1))
+            over_confidence = np.where(pred[:, 1] == 1.)[0]
+            np.savetxt(os.path.join(self.checkpoint_dir, 'over_confidence_inst_{}.txt'.format(i)), over_confidence)
             pos_index = np.where(pred[:, 1] > 0.9)[0]
-            for k in range(5):
-                heatmap = self.return_heatmap(model, test[pos_index[k]])
-                diff = test[pos_index[k]] - test[pos_index[k] + int(len(test) / 2)]
-                self.plot_heatmap(heatmap,diff.reshape(self.img_rows,self.img_cols), k, i)
+            # for k in range(5):
+            #     heatmap = self.return_heatmap(model, test[pos_index[k]])
+            #     diff = test[pos_index[k]] - test[pos_index[k] + int(len(test) / 2)]
+            #     self.plot_heatmap(heatmap, diff.reshape(64, 64), k, i)
 
             keras.backend.clear_session()
 
@@ -327,25 +454,24 @@ class CNN():
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument('--datapath', type=str, default='datapath')
-    parser.add_argument('--testpath', type=str, default='test')
-    parser.add_argument('--psf_path', type=str, default='psf')
     parser.add_argument('--checkpt', type=str, default='checkpt')
-    parser.add_argument('--batch_size', type=int, default=16)
-    parser.add_argument('--epochs', type=int, default=50)
+    parser.add_argument('--batch_size', type=int, default=32)
+    parser.add_argument('--epochs', type=int, default=40)
     parser.add_argument('--droprate', type=float, default=0.35)
-    parser.add_argument('--num_features', type=int, default=8)
-    parser.add_argument('--num_class', type=int, default=2)
+    parser.add_argument('--num_features', type=int, default=32)
     parser.add_argument('--lr', type=float, default=0.0001)
     parser.add_argument('--decay', type=float, default=0.0)
-    parser.add_argument('--cv_num', type=int, default=3)
-    parser.add_argument('--dense_unit', type=int, default=256)
-    parser.add_argument('--model_type', type=str, default='simple')
-    parser.add_argument('--SNR', type=float, default=10)
-
+    parser.add_argument('--output_name', type=str, default='training')
+    parser.add_argument('--cv_num', type=int, default=5)
+    parser.add_argument('--dense_unit', type=int, default=512)
+    parser.add_argument('--model_type', type=str, default='vgg')
+    parser.add_argument('--testpath', type=str, default='test')
+    parser.add_argument('--psfpath', type=str, default='psf')
+    parser.add_argument('--c_ratio', nargs='+', type=float)
 
     args = parser.parse_args()
     DLmodel = CNN(datapath=args.datapath, batch_size=args.batch_size, epochs=args.epochs, droprate=args.droprate,
-                  num_features=args.num_features, num_class=args.num_class, lr=args.lr,
-                   checkpoint_dir=args.checkpt, CV_num=args.cv_num,
-                  dense_unit=args.dense_unit, model_type=args.model_type, test_path=args.testpath, SNR=args.SNR,
-                  psf_path=args.psf_path,decay=args.decay)
+                  num_features=args.num_features, lr=args.lr, output_name=args.output_name,
+                  checkpoint_dir=args.checkpt, CV_num=args.cv_num,
+                  dense_unit=args.dense_unit, model_type=args.model_type, testpath=args.testpath,
+                  psfpath=args.psfpath, decay=args.decay, c_ratio=args.c_ratio)
