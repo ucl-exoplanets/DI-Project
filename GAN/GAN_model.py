@@ -124,9 +124,9 @@ class DCGAN(object):
 
         print('G ',np.shape(self.G))
 
-        self.D, self.D_logits ,self.mask1,self.mask2,self.mask3,self.mask4,self.mask5= self.discriminator(self.images)
+        self.D, self.D_logits = self.discriminator(self.images)
 
-        self.D_, self.D_logits_,self.mask1_,self.mask2_,self.mask3_,self.mask4_,self.mask5_ = self.discriminator(self.G, reuse=True)
+        self.D_, self.D_logits_ = self.discriminator(self.G, reuse=True)
 
         self.d_sum = tf.summary.histogram("d", self.D)
         self.d__sum = tf.summary.histogram("d_", self.D_)
@@ -311,7 +311,7 @@ class DCGAN(object):
 
         result_list = []
         score_list = []
-        for idx in range(437, batch_idxs):
+        for idx in range(0, batch_idxs):
 
             print('IDX: ',idx, '/',batch_idxs)
 
@@ -495,12 +495,13 @@ class DCGAN(object):
             # np.savetxt(os.path.join(config.outDir, "dis_result.txt"), result_list)
 
 
-            ## histogram similarity test
-            hist_real = np.histogram(batch_images[0, :, :, 0], bins=50, range=(batch_images[0, :, :, 0].min(), batch_images[0, :, :, 0].max()))
-            hist_G = np.histogram(best_img[0, :, :, 0], bins=50, range=(batch_images[0, :, :, 0].min(), batch_images[0, :, :, 0].max()))
-            score = dist.cityblock(hist_real[0].ravel().astype('float32'), hist_G[0].ravel().astype('float32'))
+            ## L1 distance between images
+            L1_distance = np.sum(np.abs(batch_images[0, :, :, 0] - best_img[0, :, :, 0]))
+            score = L1_distance
             score_list.append([frame_idx[0],score])
-            np.savetxt(os.path.join(config.outDir, "similarity_score.txt"), score_list)
+        score_list = np.array(score_list)
+
+        np.savetxt(os.path.join(config.outDir, "similarity_score.txt"), score_list)
 
     def discriminator(self, image, reuse=False):
         with tf.variable_scope("discriminator") as scope:
@@ -532,7 +533,7 @@ class DCGAN(object):
 
             flatten_h4 = tf.reshape(h4, [-1, hshape[1] * hshape[2] * hshape[3]])
             h5 = linear(flatten_h4, 1, 'd_h5_lin')
-            return tf.nn.sigmoid(h5), h5,h0_convo,h1_convo,h2_convo,h3_convo,h4_convo
+            return tf.nn.sigmoid(h5), h5
 
 
     def generator(self, z):
