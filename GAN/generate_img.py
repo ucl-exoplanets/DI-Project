@@ -13,7 +13,7 @@ from glob import glob
 import tensorflow as tf
 from six.moves import xrange
 import pylab as pl
-from scipy.spatial import distance as dist
+import scipy
 pl.switch_backend('agg')
 
 
@@ -124,9 +124,9 @@ class DCGAN(object):
 
         print('G ',np.shape(self.G))
 
-        self.D, self.D_logits = self.discriminator(self.images)
+        self.D, self.D_logits ,self.mask1,self.mask2,self.mask3,self.mask4,self.mask5= self.discriminator(self.images)
 
-        self.D_, self.D_logits_ = self.discriminator(self.G, reuse=True)
+        self.D_, self.D_logits_,self.mask1_,self.mask2_,self.mask3_,self.mask4_,self.mask5_ = self.discriminator(self.G, reuse=True)
 
         self.d_sum = tf.summary.histogram("d", self.D)
         self.d__sum = tf.summary.histogram("d_", self.D_)
@@ -174,6 +174,15 @@ class DCGAN(object):
         self.contextual_loss = tf.reduce_sum(
             tf.contrib.layers.flatten(
             tf.abs(self.G - self.images)),1)
+
+        #!# mask implementation.
+        # self.contextual_loss = tf.reduce_sum(
+        #     tf.contrib.layers.flatten(
+        #         tf.abs(tf.multiply(self.mask, self.G) - tf.multiply(self.mask, self.images))), 1)
+        #
+        # self.contextual_loss += tf.reduce_sum(
+        #     tf.contrib.layers.flatten(
+        #         tf.abs(tf.multiply(self.lowres_mask, self.G) - tf.multiply(self.lowres_mask, self.images))), 1)
 
         self.perceptual_loss = self.g_loss
         self.complete_loss = self.contextual_loss + self.lam*self.perceptual_loss
@@ -236,6 +245,9 @@ class DCGAN(object):
                 batch_images = np.array(batch).astype(np.float32)
                 # print(np.shape(batch_images))
                 batch_images = np.reshape(batch_images,[self.batch_size,self.image_size,self.image_size,1])
+                # parameters = np.column_stack([np.mean(batch_images[:,0,:],axis=1),np.mean(batch_images[:,1,:],axis=1)])
+                # batch_images = batch_images[:,2:,:]
+                # print('batch_image ',np.shape(batch_images))
 
 
                 #setup batch z
@@ -307,201 +319,69 @@ class DCGAN(object):
         nImgs = config.batch_size
 
         # batch_idxs = int(np.ceil(nImgs/self.batch_size))
-        batch_idxs =  min(len(self.data[:, 0, 0]),config.train_size) // self.batch_size
-
-        result_list = []
-        score_list = []
-        for idx in range(0, batch_idxs):
-
-            print('IDX: ',idx, '/',batch_idxs)
+        batch_idxs =  len(self.data[:, 0, 0]) // self.batch_size
 
 
-            l = idx*self.batch_size
-            u = min((idx+1)*self.batch_size, nImgs)
-            batchSz = u-l
+        #!# mask implementation here:
 
+        # mask = np.zeros(self.image_shape)
+        # mask[20:40, 20:40] = 1
+        # lowres_mask = np.ones(self.image_shape)*0.2
+        m = 0
+        v = 0
+        image_stack = []
+        for idx in range(0,10000):
+            print(idx)
 
+            l = idx * self.batch_size
+            u = min((idx + 1) * self.batch_size, nImgs)
+            batchSz = u - l
 
-            frame_idx = [i + idx*self.batch_size for i in range(self.batch_size)]
-            batch = [self.data[i + idx*self.batch_size, :, :] for i in range(self.batch_size)]
-            batch_images = np.array(batch).astype(np.float32)
-            batch_images = np.reshape(batch_images, [self.batch_size, self.image_size, self.image_size, 1])
+            batch_images = 0
+            # print('batch size ',self.batch_size)
+            # print([i + idx*self.batch_size for i in range(self.batch_size)])
 
-            print('batchimage size ',np.shape(batch_images))
+            # frame_idx = [i + idx * self.batch_size for i in range(self.batch_size)]
+            # batch = [self.data[i + idx * self.batch_size, :, :] for i in range(self.batch_size)]
+            # batch_images = np.array(batch).astype(np.float32)
+            # batch_images = np.reshape(batch_images, [self.batch_size, self.image_size, self.image_size, 1])
 
-
-            # if batchSz < self.batch_size:
-            #     print(batchSz)
-            #     padSz = ((0, int(self.batch_size-batchSz)), (0,0), (0,0), (0,0))
-            #     batch_images = np.pad(batch_images, padSz, 'constant')
-            #     batch_images = batch_images.astype(np.float32)
 
             #!# might need to change accordingly.
             # zhats = np.random.uniform(-1, 1, size=(self.batch_size, self.z_dim))
+            zhats = np.random.normal(0, 0.3, size=(self.batch_size, self.z_dim))
 
-            m = 0
-            v = 0
+            for i in range(1):
+                fd = {
+                    self.z: zhats,
+                    self.is_training: False,
+                }
 
-            nRows = np.ceil(batchSz/8)
-            nCols = min(8, batchSz)
+                run = [self.G]
+                G_imgs = self.sess.run(run, feed_dict=fd)
 
-            # save_image(batch_images[0,:,:,0], [nRows,nCols],
-            #             os.path.join(config.outDir, 'before.png'))
+                # if config.approach == 'adam':
+                #     # Optimize single completion with Adam
+                #     m_prev = np.copy(m)
+                #     v_prev = np.copy(v)
+                #     m = config.beta1 * m_prev + (1 - config.beta1) * g[0]
+                #     v = config.beta2 * v_prev + (1 - config.beta2) * np.multiply(g[0], g[0])
+                #     m_hat = m / (1 - config.beta1 ** (i + 1))
+                #     v_hat = v / (1 - config.beta2 ** (i + 1))
+                #     zhats += - np.true_divide(config.lr * m_hat, (np.sqrt(v_hat) + config.eps))
+                #     zhats = np.clip(zhats, -1, 1)
 
+            image_stack.append(G_imgs)
 
-
-            for img in range(batchSz):
-                with open(os.path.join(config.outDir, 'logs/hats_{:02d}.log'.format(img)), 'a') as f:
-                    f.write('iter loss ' +
-                            ' '.join(['z{}'.format(zi) for zi in range(self.z_dim)]) +
-                            '\n')
-            loss_score = 10000
-            for turns in range(1):
-                zhats = np.random.normal(0, 0.3, size=(self.batch_size, self.z_dim))
-
-                for i in range(config.nIter):
-                    fd = {
-                        self.z: zhats,
-                        self.images:batch_images,
-                        self.is_training: False,
-                    }
-
-                    run = [self.complete_loss, self.grad_complete_loss, self.G]
-                    loss, g, G_imgs = self.sess.run(run, feed_dict=fd)
-
-                    for img in range(batchSz):
-                        with open(os.path.join(config.outDir, 'logs/hats_{:02d}.log'.format(img)), 'ab') as f:
-                            f.write('{} {} '.format(i, loss[img]).encode())
-                            np.savetxt(f, zhats[img:img+1])
-
-                    if i % config.outInterval == 0:
-                        print(i, np.mean(loss))
-
-                        diffimage = batch_images - G_imgs
-
-                        # pl.figure(10)
-                        # pl.clf()
-                        # bins = np.linspace(np.min(batch_images), np.max(batch_images), 100)
-                        # pl.hist(batch_images[0, :, :, 0].flatten(), bins,alpha=0.5,label='Real')
-                        # pl.hist(G_imgs[0, :, :, 0].flatten(), bins,alpha=0.5,label='Generated')
-                        # pl.legend()
-                        # imgName = os.path.join(config.outDir,
-                        #                        'generated/{0:04d}_G_hist_{1}.png'.format(i,idx*self.batch_size))
-                        # pl.savefig(imgName)
-                        #
-                        # # print(np.shape(zhats))
-                        #
-                        # imgName = os.path.join(config.outDir,
-                        #                        'hats_imgs/{0:04d}_{1}_0_zhats.png'.format(i,idx*self.batch_size))
-                        # pl.figure(3)
-                        # pl.clf()
-                        # pl.imshow(zhats)
-                        # pl.savefig(imgName)
-                        #
-                        # print(np.min(diffimage[:,:,:,0]),np.max(diffimage[:,:,:,0]))
+        image_stack = np.array(image_stack).reshape(-1,64,64,1)
+        print(image_stack.shape)
+        np.save("image_stack_test",image_stack)
 
 
-                    if config.approach == 'adam':
-                        # Optimize single completion with Adam
-                        m_prev = np.copy(m)
-                        v_prev = np.copy(v)
-                        m = config.beta1 * m_prev + (1 - config.beta1) * g[0]
-                        v = config.beta2 * v_prev + (1 - config.beta2) * np.multiply(g[0], g[0])
-                        m_hat = m / (1 - config.beta1 ** (i + 1))
-                        v_hat = v / (1 - config.beta2 ** (i + 1))
-                        zhats += - np.true_divide(config.lr * m_hat, (np.sqrt(v_hat) + config.eps))
-                        zhats = np.clip(zhats, -1, 1)
-
-                    elif config.approach == 'hmc':
-                        # Sample example completions with HMC (not in paper)
-                        zhats_old = np.copy(zhats)
-                        loss_old = np.copy(loss)
-                        v = np.random.randn(self.batch_size, self.z_dim)
-                        v_old = np.copy(v)
-
-                        for steps in range(config.hmcL):
-                            v -= config.hmcEps/2 * config.hmcBeta * g[0]
-                            zhats += config.hmcEps * v
-                            np.copyto(zhats, np.clip(zhats, -1, 1))
-                            loss, g, _ = self.sess.run(run, feed_dict=fd)
-                            v -= config.hmcEps/2 * config.hmcBeta * g[0]
-
-                        for img in range(batchSz):
-                            logprob_old = config.hmcBeta * loss_old[img] + np.sum(v_old[img]**2)/2
-                            logprob = config.hmcBeta * loss[img] + np.sum(v[img]**2)/2
-                            accept = np.exp(logprob_old - logprob)
-                            if accept < 1 and np.random.uniform() > accept:
-                                np.copyto(zhats[img], zhats_old[img])
-
-                        config.hmcBeta *= config.hmcAnneal
-                    else:
-                        assert(False)
-                if loss_score > np.mean(loss):
-                    loss_score = np.mean(loss)
-                    best_img = G_imgs
-                else:
-                    pass
-            print(frame_idx)
-            diffimage = batch_images - best_img
-            pl.figure(4)
-            pl.clf()
-            pl.imshow(diffimage[0, :, :, 0])
-            pl.colorbar()
-            # pl.clim(-0.005,0.005)
-
-            imgName = os.path.join(config.outDir,
-                                   'final/{:04d}_diff.png'.format(frame_idx[0]))
-            pl.axis('off')
-            pl.savefig(imgName,bbox_inches='tight')
-
-            pl.figure(5)
-            pl.clf()
-
-            pl.imshow(batch_images[0, :, :, 0])
-            pl.colorbar()
-            pl.clim(batch_images.min(), batch_images.max())
-
-            imgName = os.path.join(config.outDir,
-                                   'final/{:04d}_batch.png'.format(frame_idx[0]),)
-            pl.axis('off')
-            pl.savefig(imgName,bbox_inches='tight')
-
-            pl.figure(6)
-            pl.clf()
-            pl.imshow(best_img[0, :, :, 0])
-            pl.colorbar()
-            pl.clim(batch_images.min(), batch_images.max())
-
-            imgName = os.path.join(config.outDir,
-                                   'final/{:04d}_G.png'.format(frame_idx[0]))
-            pl.axis('off')
-            pl.savefig(imgName,bbox_inches='tight')
-
-            pl.figure(7)
-            pl.clf()
-            bins = np.linspace(np.min(batch_images), np.max(batch_images), 100)
-            pl.hist(batch_images[0, :, :, 0].flatten(), bins, alpha=0.5, label='real')
-            pl.hist(best_img[0, :, :, 0].flatten(), bins, alpha=0.5, label='Generated')
-            imgName = os.path.join(config.outDir,
-                                   'hist/{:04d}_batch_G.png'.format(frame_idx[0]))
-            pl.legend()
-            pl.savefig(imgName)
-
-            # results, _, h0_mask, h1_mask, h2_mask, h3_mask, h4_mask = self.sess.run(
-            #     [self.D, self.D_logits, self.mask1, self.mask2, self.mask3, self.mask4, self.mask5],
-            #     feed_dict={self.images: batch_images, self.is_training: False})
-            # result_list.append(np.squeeze(results))
-            # print(np.shape(result_list))
-            # np.savetxt(os.path.join(config.outDir, "dis_result.txt"), result_list)
 
 
-            ## L1 distance between images
-            L1_distance = np.sum(np.abs(batch_images[0, :, :, 0] - best_img[0, :, :, 0]))
-            score = L1_distance
-            score_list.append([frame_idx[0],score])
-        score_list = np.array(score_list)
 
-        np.savetxt(os.path.join(config.outDir, "similarity_score.txt"), score_list)
+
 
     def discriminator(self, image, reuse=False):
         with tf.variable_scope("discriminator") as scope:
@@ -533,7 +413,7 @@ class DCGAN(object):
 
             flatten_h4 = tf.reshape(h4, [-1, hshape[1] * hshape[2] * hshape[3]])
             h5 = linear(flatten_h4, 1, 'd_h5_lin')
-            return tf.nn.sigmoid(h5), h5
+            return tf.nn.sigmoid(h5), h5,h0_convo,h1_convo,h2_convo,h3_convo,h4_convo
 
 
     def generator(self, z):
@@ -588,7 +468,6 @@ class DCGAN(object):
 
             return tf.nn.sigmoid(hs[4])
             # return tf.nn.tanh(hs[4])
-            # return shallow_sig(hs[4],20)
 
 
 
