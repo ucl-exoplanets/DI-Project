@@ -47,3 +47,6 @@ To train the CNN, please change directory into the CNN folder and type the follo
 The checkpoint folder contains the training history (training_0.csv) and the checkpoint of the final trained model. 
 
 There are a number of hyperparameters available for the user to fine-tune. Feel free to experiment with them! Please refer to the code or the paper for detailed settings to recreate the paper's results. 
+
+## License
+<a rel="license" href="http://creativecommons.org/licenses/by/4.0/"><img alt="Creative Commons Licence" style="border-width:0" src="https://i.creativecommons.org/l/by/4.0/88x31.png" /></a><br />This work is licensed under a <a rel="license" href="http://creativecommons.org/licenses/by/4.0/">Creative Commons Attribution 4.0 International License</a>.
